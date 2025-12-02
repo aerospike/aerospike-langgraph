@@ -1,0 +1,190 @@
+# tests/test_fanout_aerospike.py
+
+import operator
+import os
+from typing import Annotated
+
+import pytest
+from typing_extensions import TypedDict
+
+from langchain_core.runnables import RunnableConfig
+from langgraph.constants import START, Send
+from langgraph.graph import END, StateGraph
+from langgraph.checkpoint.base import BaseCheckpointSaver
+
+from langgraph.checkpoint.aerospike import AerospikeSaver
+
+
+# ---------- Graph definitions (copied from Mongo benchmark, sync only) ----------
+
+class OverallState(TypedDict):
+    subjects: list[str]
+    jokes: Annotated[list[str], operator.add]
+
+
+class JokeInput(TypedDict):
+    subject: str
+
+
+class JokeOutput(TypedDict):
+    jokes: list[str]
+
+
+class JokeState(JokeInput, JokeOutput):
+    ...
+
+
+N_SUBJECTS = 10
+
+
+def fanout_to_subgraph() -> StateGraph:
+    # Subgraph nodes create a joke.
+    def edit(state: JokeOutput) -> JokeOutput:
+        return {"jokes": [f"{state['jokes'][0]}... and cats!"]}
+
+    def generate(state: JokeInput) -> JokeOutput:
+        return {"jokes": [f"Joke about the year {state['subject']}"]}
+
+    def bump(state: JokeOutput) -> dict[str, list[str]]:
+        return {"jokes": [state["jokes"][0] + " and the year before"]}
+
+    def bump_loop(state: JokeOutput) -> str:
+        # Repeat bump 3 times, then go to edit
+        return (
+            "edit"
+            if state["jokes"][0].endswith(" and the year before" * 3)
+            else "bump"
+        )
+
+    subgraph = StateGraph(JokeState)
+    subgraph.add_node("edit", edit)
+    subgraph.add_node("generate", generate)
+    subgraph.add_node("bump", bump)
+    subgraph.set_entry_point("generate")
+    subgraph.add_edge("generate", "bump")
+    subgraph.add_node("bump_loop", bump_loop)
+    subgraph.add_conditional_edges("bump", bump_loop)
+    subgraph.set_finish_point("edit")
+    subgraphc = subgraph.compile()
+
+    # Parent graph maps the joke-generating subgraph.
+    def fanout(state: OverallState) -> list:
+        return [Send("generate_joke", {"subject": s}) for s in state["subjects"]]
+
+    parentgraph = StateGraph(OverallState)
+    parentgraph.add_node("generate_joke", subgraphc)
+    parentgraph.add_conditional_edges(START, fanout)
+    parentgraph.add_edge("generate_joke", END)
+    return parentgraph
+
+
+# ---------- Fixtures ----------
+
+@pytest.fixture
+def joke_subjects() -> OverallState:
+    years = [str(2025 - 10 * i) for i in range(N_SUBJECTS)]
+    return {"subjects": years}
+
+
+@pytest.fixture(scope="function")
+def aerospike_client():
+    """
+    Minimal local Aerospike client.
+    Adapt host/port/namespace to your setup.
+    """
+    import aerospike
+
+    config = {
+        "hosts": [("127.0.0.1", 3000)],
+    }
+    client = aerospike.client(config).connect()
+    try:
+        yield client
+    finally:
+        client.close()
+
+
+@pytest.fixture(scope="function")
+def aerospike_saver(aerospike_client) -> AerospikeSaver:
+    # Use dedicated sets so these tests don't collide with others
+    return AerospikeSaver(
+        client=aerospike_client,
+        namespace="test",
+        set_cp="lg_cp_fanout",
+        set_writes="lg_cp_fanout_w",
+        set_meta="lg_cp_fanout_meta",
+    )
+
+
+@pytest.fixture(autouse=True)
+def disable_langsmith() -> None:
+    """Disable LangSmith tracing for all tests."""
+    os.environ["LANGCHAIN_TRACING_V2"] = "false"
+    os.environ["LANGCHAIN_API_KEY"] = ""
+
+
+# ---------- Tests (sync only) ----------
+
+def test_fanout_aerospike(joke_subjects: OverallState, aerospike_saver: AerospikeSaver) -> None:
+    assert isinstance(aerospike_saver, BaseCheckpointSaver)
+
+    graph = fanout_to_subgraph()
+    graphc = graph.compile(checkpointer=aerospike_saver)
+
+    config: RunnableConfig = {
+        "configurable": {
+            "thread_id": "fanout_aerospike",
+            "checkpoint_ns": "demo_fanout",
+        }
+    }
+
+    # Sync streaming version
+    out = [c for c in graphc.stream(joke_subjects, config=config)]
+
+    # We expect one result per subject
+    assert len(out) == N_SUBJECTS
+    assert isinstance(out[0], dict)
+    assert out[0].keys() == {"generate_joke"}
+    assert set(out[0]["generate_joke"].keys()) == {"jokes"}
+
+    # Every joke should end with the triple "year before" + "... and cats!"
+    assert all(
+        res["generate_joke"]["jokes"][0].endswith(
+            f"{' and the year before' * 3}... and cats!"
+        )
+        for res in out
+    )
+
+
+def test_custom_properties_aerospike(aerospike_saver: AerospikeSaver) -> None:
+    state_graph = fanout_to_subgraph()
+
+    assistant_id = "456"
+    user_id = "789"
+    config: RunnableConfig = {
+        "configurable": {
+            "thread_id": "custom_props_aerospike",
+            "checkpoint_ns": "demo_fanout",
+            "assistant_id": assistant_id,
+            "user_id": user_id,
+        }
+    }
+
+    compiled = state_graph.compile(checkpointer=aerospike_saver)
+
+    # We don’t care about actual jokes here, just that a checkpoint is written.
+    compiled.invoke(
+        input={"subjects": [], "jokes": []},  # type: ignore[arg-type]
+        config=config,
+        stream_mode="values",
+        debug=False,
+    )
+
+    checkpoint_tuple = aerospike_saver.get_tuple(config)
+    assert checkpoint_tuple is not None
+
+    print(checkpoint_tuple)
+
+    # Thanks to the merged metadata in put(), these should be present:
+    assert checkpoint_tuple.metadata.get("user_id") == user_id
+    assert checkpoint_tuple.metadata.get("assistant_id") == assistant_id

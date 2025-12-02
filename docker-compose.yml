@@ -1,0 +1,26 @@
+version: "3.8"
+
+services:
+  aerospike:
+    image: aerospike/aerospike-server:latest
+    container_name: aerospike
+    ports:
+      - "3000:3000"   # service
+      - "3001:3001"   # fabric
+      - "3002:3002"   # mesh
+    # --- OPTIONAL: mount a custom config & data dir ---
+    # volumes:
+    #   - ./aerospike/etc/aerospike:/etc/aerospike
+    #   - ./aerospike/data:/opt/aerospike/data
+    # command: ["--config-file", "/etc/aerospike/aerospike.conf"]
+    # -----------------------------------------------
+    restart: unless-stopped
+
+  tools:
+    image: aerospike/aerospike-tools:latest
+    # No need to run this all the time; we’ll run it on demand:
+    #   docker compose run --rm tools aql -h aerospike
+    depends_on:
+      - aerospike
+    entrypoint: ["bash", "-lc", "echo 'Use: docker compose run --rm tools aql -h aerospike' && sleep infinity"]
+    # If you prefer to keep it ephemeral, you can remove entrypoint and run commands directly.
