@@ -1,6 +1,7 @@
 # [Aerospike_Checkpoint_Langgraph]
 
 <!-- Brief description of what your project does -->
+
 Store LangGraph checkpoints in Aerospike using the provided `AerospikeSaver`. The repo includes a minimal Aerospike docker setup, examples, and pytest-based checks.
 
 ## Getting Started
@@ -14,7 +15,7 @@ Store LangGraph checkpoints in Aerospike using the provided `AerospikeSaver`. Th
 git clone https://github.com/aerospike/aerospike-checkpoint-langgraph.git
 cd aerospike-checkpoint-langgraph
 
-# Install deps 
+# Install deps
 #Python 3.10+
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
@@ -26,12 +27,13 @@ docker compose up -d
 ## Project Structure
 
 <!-- Describe your project structure here -->
+
 Core implementation: `langgraph/checkpoint/aerospike/saver.py`.
 
 ```text
 .
-├── .github/                                   
-│   ├── workflows/                             # GitHub Actions workflows 
+├── .github/
+│   ├── workflows/                             # GitHub Actions workflows
 │   └── dependabot.yml                         # Dependabot configuration
 │
 ├── langgraph/checkpoint/aerospike/            # Aerospike checkpointer implementation
@@ -51,23 +53,27 @@ Core implementation: `langgraph/checkpoint/aerospike/saver.py`.
 └── (config files: .gitignore, .actrc, commitlint, etc.)
 
 ```
+
 ## Test
 
 Use in a graph:
-   ```python
-   import aerospike
-   from langgraph.checkpoint.aerospike import AerospikeSaver
 
-   client = aerospike.client({"hosts": [("127.0.0.1", 3000)]}).connect()
-   saver = AerospikeSaver(client=client, namespace="test")
+```python
+import aerospike
+from langgraph.checkpoint.aerospike import AerospikeSaver
 
-   compiled = graph.compile(checkpointer=saver)  # graph is your LangGraph graph
-   compiled.invoke({"input": "hello"}, config={"configurable": {"thread_id": "demo"}})
-   ```
+client = aerospike.client({"hosts": [("127.0.0.1", 3000)]}).connect()
+saver = AerospikeSaver(client=client, namespace="test")
+
+compiled = graph.compile(checkpointer=saver)  # graph is your LangGraph graph
+compiled.invoke({"input": "hello"}, config={"configurable": {"thread_id": "demo"}})
+```
+
 - Run our tests:
   ```bash
   pytest
   ```
+
 ## Contributing
 
 Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
@@ -95,5 +101,3 @@ For questions or issues, please:
 - Contact the maintainers
 
 ---
-
-
