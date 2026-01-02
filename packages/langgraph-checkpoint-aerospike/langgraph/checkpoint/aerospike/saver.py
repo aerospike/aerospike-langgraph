@@ -34,7 +34,6 @@ class AerospikeSaver(BaseCheckpointSaver):
         set_writes: str = "lg_cp_w",
         set_meta: str = "lg_cp_meta",
         ttl: Optional[Dict[str, Any]] = None,
-        timeline_max: int = 500,
     ) -> None:
         self.client = client
         self.ns = namespace
@@ -42,7 +41,7 @@ class AerospikeSaver(BaseCheckpointSaver):
         self.set_writes = set_writes
         self.set_meta = set_meta
         self.ttl = ttl or {}
-        self.timeline_max = max(1, int(timeline_max))
+        self.timeline_max: Optional[int] = None
         self._ttl_minutes: Optional[int] = self.ttl.get("default_ttl")
         self._refresh_on_read: bool = bool(self.ttl.get("refresh_on_read", False))
 
@@ -94,7 +93,7 @@ class AerospikeSaver(BaseCheckpointSaver):
             else:
                 meta = None
         try:
-            self.client.put(key, bins, meta=meta)
+            self.client.put(key, bins, meta)
         except aerospike.exception.AerospikeError as e:
             raise RuntimeError(f"Aerospike put failed for {key}: {e}") from e
 
@@ -129,6 +128,13 @@ class AerospikeSaver(BaseCheckpointSaver):
         except Exception:
             return []
         
+    def _delete(self, key) -> None:
+        try:
+            self.client.remove(key)
+        except aerospike.exception.RecordNotFound:
+            pass
+        except aerospike.exception.AerospikeError as e:
+            raise RuntimeError(f"Aerospike delete failed for {key}: {e}") from e    
 
     # ---------- public API (RunnableConfig-based) ----------
     def put(
@@ -180,7 +186,7 @@ class AerospikeSaver(BaseCheckpointSaver):
 
         items = [(t, cid) for (t, cid) in items if cid != checkpoint_id]
         items.insert(0, (ts, checkpoint_id))
-        if len(items) > self.timeline_max:
+        if self.timeline_max is not None and len(items) > self.timeline_max:
             items = items[: self.timeline_max]
         self._put(timeline_key, {"items": json.dumps(items)})
 
@@ -329,6 +335,29 @@ class AerospikeSaver(BaseCheckpointSaver):
             pending_writes=pending_writes,
         )
 
+
+    def delete_thread(self, config: RunnableConfig) -> None:
+        thread_id, checkpoint_ns, _ = self._ids_from_config(config)
+
+        timeline_key = self._key_timeline(thread_id, checkpoint_ns)
+        items = self._read_timeline_items(timeline_key)
+        checkpoint_ids = [cid for _ts, cid in items if cid]
+
+        latest_key = self._key_latest(thread_id, checkpoint_ns)
+        latest_rec = self._get(latest_key)
+        if latest_rec is not None:
+            latest_cid = (latest_rec[2] or {}).get("checkpoint_id")
+            if isinstance(latest_cid, str) and latest_cid and latest_cid not in checkpoint_ids:
+                checkpoint_ids.append(latest_cid)
+
+        for cid in checkpoint_ids:
+            self._delete(self._key_cp(thread_id, checkpoint_ns, cid))
+            self._delete(self._key_writes(thread_id, checkpoint_ns, cid))
+
+        
+        self._delete(timeline_key)
+        self._delete(latest_key)
+
     def list(
         self,
         config: Optional[RunnableConfig],
@@ -444,3 +473,11 @@ class AerospikeSaver(BaseCheckpointSaver):
             task_path,
         )
 
+    async def adelete_thread(
+        self,
+        config: RunnableConfig,
+    ) -> None:
+        """
+        Asynchronously deletes ALL checkpoint history for the given thread/namespace.
+        """
+        await asyncio.to_thread(self.delete_thread, config)
