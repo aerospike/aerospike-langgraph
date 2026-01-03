@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone 
 import json
 import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence, AsyncIterator
+import asyncio
 
 from langchain_core.runnables import RunnableConfig
 
@@ -12,58 +14,18 @@ from langgraph.checkpoint.base import (
     BaseCheckpointSaver,
     CheckpointTuple,
     ChannelVersions,
-    WRITES_IDX_MAP
+    WRITES_IDX_MAP,
+    Checkpoint,
+    CheckpointMetadata
 )
 
 SEP = "|"
 
-
-def _now_ns() -> int:
-    return time.time_ns()
+def _now_ns() -> datetime:
+    return datetime.now(tz=timezone.utc)
 
 
 class AerospikeSaver(BaseCheckpointSaver):
-    """
-    Minimal checkpointer with zero server-side querying requirements.
-
-    Public API expects a RunnableConfig-like dict:
-
-        config = {
-            "configurable": {
-                "thread_id": "<required>",
-                "checkpoint_ns": "<required>",
-                # optional:
-                "checkpoint_id": "<for put/get or explicit resume>",
-                "before": "<for list()>",
-            },
-            # you can also pass tags/metadata/etc. but they're ignored here
-        }
-
-    Storage layout (all in a single namespace):
-      - main records (set=self.set_cp):
-            key:  "{thread_id}|{checkpoint_ns}|{checkpoint_id}"
-            bins: {
-                "thread_id": str,
-                "checkpoint_ns": str,
-                "checkpoint_id": str,
-                "checkpoint": str (JSON),
-                "metadata":   str (JSON),
-                "ts":         int (ns since epoch),
-            }
-
-      - latest pointer record (set=self.set_meta):
-            key:  "{thread_id}|{checkpoint_ns}|__latest__"
-            bins: { "checkpoint_id": str, "ts": int }
-
-      - timeline record (set=self.set_meta):
-            key:  "{thread_id}|{checkpoint_ns}|__timeline__"
-            bins: { "items": str(JSON list[[ts:int, checkpoint_id:str], ...]) }
-
-      - writes (optional, set=self.set_writes):
-            key:  "{thread_id}|{checkpoint_ns}|{checkpoint_id}"
-            bins: { "writes": str(JSON) }
-    """
-
     def __init__(
         self,
         client: aerospike.Client,
@@ -71,16 +33,17 @@ class AerospikeSaver(BaseCheckpointSaver):
         set_cp: str = "lg_cp",
         set_writes: str = "lg_cp_w",
         set_meta: str = "lg_cp_meta",
-        ttl: Optional[int] = None,
-        timeline_max: int = 500,
+        ttl: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.client = client
         self.ns = namespace
         self.set_cp = set_cp
         self.set_writes = set_writes
         self.set_meta = set_meta
-        self.ttl = ttl
-        self.timeline_max = max(1, int(timeline_max))
+        self.ttl = ttl or {}
+        self.timeline_max: Optional[int] = None
+        self._ttl_minutes: Optional[int] = self.ttl.get("default_ttl")
+        self._refresh_on_read: bool = bool(self.ttl.get("refresh_on_read", False))
 
     # ---------- config parsing ----------
     @staticmethod
@@ -118,10 +81,17 @@ class AerospikeSaver(BaseCheckpointSaver):
 
     def _key_timeline(self, thread_id: str, checkpoint_ns: str):
         return (self.ns, self.set_meta, f"{thread_id}{SEP}{checkpoint_ns}{SEP}__timeline__")
-
+    
     # ---------- aerospike io ----------
     def _put(self, key, bins: Dict[str, Any]) -> None:
-        meta = {"ttl": self.ttl} if self.ttl is not None else None
+        minutes = self._ttl_minutes
+        meta = None
+        if minutes is not None:
+            minutes = int(minutes)
+            if minutes > 0:
+                meta = {"ttl": minutes * 60}
+            else:
+                meta = None
         try:
             self.client.put(key, bins, meta)
         except aerospike.exception.AerospikeError as e:
@@ -129,11 +99,19 @@ class AerospikeSaver(BaseCheckpointSaver):
 
     def _get(self, key) -> Optional[Tuple]:
         try:
-            return self.client.get(key)
+            rec = self.client.get(key)
         except aerospike.exception.RecordNotFound:
             return None
         except aerospike.exception.AerospikeError as e:
             raise RuntimeError(f"Aerospike get failed for {key}: {e}") from e
+        
+        if self._refresh_on_read and self._ttl_minutes is not None and self._ttl_minutes > 0:
+            try:
+                self.client.touch(key, int(self._ttl_minutes) * 60)
+            except aerospike.exception.AerospikeError:
+                pass
+
+        return rec
 
     def _read_timeline_items(self, timeline_key) -> List[Tuple[int, str]]:
         rec = self._get(timeline_key)
@@ -149,25 +127,24 @@ class AerospikeSaver(BaseCheckpointSaver):
             return cleaned
         except Exception:
             return []
+        
+    def _delete(self, key) -> None:
+        try:
+            self.client.remove(key)
+        except aerospike.exception.RecordNotFound:
+            pass
+        except aerospike.exception.AerospikeError as e:
+            raise RuntimeError(f"Aerospike delete failed for {key}: {e}") from e    
 
     # ---------- public API (RunnableConfig-based) ----------
     def put(
         self,
-        config: Dict[str, Any],
-        checkpoint: Dict[str, Any],
-        metadata: Dict[str, Any],
+        config: RunnableConfig,
+        checkpoint: Checkpoint,
+        metadata: CheckpointMetadata,
         new_versions: ChannelVersions,
-    ) -> Dict[str, Any]:
-            
-        """
-        Save/overwrite a checkpoint and advance latest/timeline pointers.
-
-        LangGraph will pass in:
-          - config: current RunnableConfig (may or may not have checkpoint_id set)
-          - checkpoint: full checkpoint dict (includes 'id' and 'ts')
-          - metadata: CheckpointMetadata dict
-          - new_versions: channel versions updated in this step (we ignore for now)
-        """
+    ) -> RunnableConfig:
+        
         thread_id, checkpoint_ns, parent_checkpoint_id = self._ids_from_config(config)
         checkpoint_id = checkpoint.get("id")
         if not checkpoint_id:
@@ -175,8 +152,10 @@ class AerospikeSaver(BaseCheckpointSaver):
 
         ts = checkpoint.get("ts")
         if ts is None:
-            ts = _now_ns()
-            checkpoint["ts"] = ts
+            ts_dt = _now_ns()
+            ts_str = ts_dt.isoformat()
+            checkpoint["ts"] = ts_str
+            ts = ts_str
 
         cp_type, cp_bytes = self.serde.dumps_typed(checkpoint)
         metadata = metadata.copy()
@@ -207,7 +186,7 @@ class AerospikeSaver(BaseCheckpointSaver):
 
         items = [(t, cid) for (t, cid) in items if cid != checkpoint_id]
         items.insert(0, (ts, checkpoint_id))
-        if len(items) > self.timeline_max:
+        if self.timeline_max is not None and len(items) > self.timeline_max:
             items = items[: self.timeline_max]
         self._put(timeline_key, {"items": json.dumps(items)})
 
@@ -226,18 +205,12 @@ class AerospikeSaver(BaseCheckpointSaver):
 
     def put_writes(
         self,
-        config: Dict[str, Any],
-        writes: Iterable[Dict[str, Any]],
+        config: RunnableConfig,
+        writes: Sequence[tuple[str, Any]],
         task_id: str,
         task_path: str = "",
     ) -> None:
-        """
-        Persist per-checkpoint write-set (optional).
-        LangGraph will call this with:
-          - config: RunnableConfig (with checkpoint_id)
-          - writes: iterable of write records
-          - task_id / task_path: identifiers for the task (we ignore them)
-        """
+        
         if not writes:
             return
 
@@ -253,7 +226,7 @@ class AerospikeSaver(BaseCheckpointSaver):
             _, _, bins = existing_rec
             existing_items = bins.get("writes")
         
-        now_ts = _now_ns()
+        now_ts = _now_ns().isoformat()
 
         for idx, (channel, value) in enumerate(writes):
             idx_val = WRITES_IDX_MAP.get(channel, idx)
@@ -284,11 +257,9 @@ class AerospikeSaver(BaseCheckpointSaver):
 
     def get_tuple(
         self,
-        config: Dict[str, Any],
+        config: RunnableConfig,
     ) -> Optional[CheckpointTuple]:
-        """
-        If configurable.checkpoint_id is omitted, returns the latest.
-        """
+        
         thread_id, checkpoint_ns, checkpoint_id = self._ids_from_config(config)
 
         if checkpoint_id is None:
@@ -364,6 +335,29 @@ class AerospikeSaver(BaseCheckpointSaver):
             pending_writes=pending_writes,
         )
 
+
+    def delete_thread(self, config: RunnableConfig) -> None:
+        thread_id, checkpoint_ns, _ = self._ids_from_config(config)
+
+        timeline_key = self._key_timeline(thread_id, checkpoint_ns)
+        items = self._read_timeline_items(timeline_key)
+        checkpoint_ids = [cid for _ts, cid in items if cid]
+
+        latest_key = self._key_latest(thread_id, checkpoint_ns)
+        latest_rec = self._get(latest_key)
+        if latest_rec is not None:
+            latest_cid = (latest_rec[2] or {}).get("checkpoint_id")
+            if isinstance(latest_cid, str) and latest_cid and latest_cid not in checkpoint_ids:
+                checkpoint_ids.append(latest_cid)
+
+        for cid in checkpoint_ids:
+            self._delete(self._key_cp(thread_id, checkpoint_ns, cid))
+            self._delete(self._key_writes(thread_id, checkpoint_ns, cid))
+
+        
+        self._delete(timeline_key)
+        self._delete(latest_key)
+
     def list(
         self,
         config: Optional[RunnableConfig],
@@ -372,20 +366,7 @@ class AerospikeSaver(BaseCheckpointSaver):
         before: Optional[RunnableConfig] = None,
         limit: int | None = None,
     ) -> Iterator[CheckpointTuple]:
-        """List checkpoints that match the given criteria.
-
-        Args:
-            config: Base configuration for filtering checkpoints.
-            filter: Additional filtering criteria.
-            before: List checkpoints created before this configuration.
-            limit: Maximum number of checkpoints to return.
-
-        Returns:
-            Iterator of matching checkpoint tuples.
-
-        Raises:
-            NotImplementedError: Implement this method in your custom checkpoint saver.
-        """
+        
         thread_id, checkpoint_ns, _ = self._ids_from_config(config or {})
 
         timeline_key = self._key_timeline(thread_id, checkpoint_ns)
@@ -434,3 +415,69 @@ class AerospikeSaver(BaseCheckpointSaver):
 
             yielded += 1
             yield tpl
+
+    async def aget(self, config: RunnableConfig) -> Checkpoint | None:
+        
+        if value := await self.aget_tuple(config):
+            return value.checkpoint
+
+    async def aget_tuple(self, config: RunnableConfig) -> CheckpointTuple | None:
+        
+        return await asyncio.to_thread(self.get_tuple, config)
+
+    async def alist(
+        self,
+        config: RunnableConfig | None,
+        *,
+        filter: dict[str, Any] | None = None,
+        before: RunnableConfig | None = None,
+        limit: int | None = None,
+    ) -> AsyncIterator[CheckpointTuple]:
+        
+        def _collect() -> list[CheckpointTuple]:
+            return list(self.list(config, filter=filter, before=before, limit=limit))
+
+        items = await asyncio.to_thread(_collect)
+        for tpl in items:
+            yield tpl
+
+    async def aput(
+        self,
+        config: RunnableConfig,
+        checkpoint: Checkpoint,
+        metadata: CheckpointMetadata,
+        new_versions: ChannelVersions,
+    ) -> RunnableConfig:
+        
+        return await asyncio.to_thread(
+            self.put,
+            config,
+            checkpoint,
+            metadata,
+            new_versions,
+        )
+
+    async def aput_writes(
+        self,
+        config: RunnableConfig,
+        writes: Sequence[tuple[str, Any]],
+        task_id: str,
+        task_path: str = "",
+    ) -> None:
+        
+        await asyncio.to_thread(
+            self.put_writes,
+            config,
+            writes,
+            task_id,
+            task_path,
+        )
+
+    async def adelete_thread(
+        self,
+        config: RunnableConfig,
+    ) -> None:
+        """
+        Asynchronously deletes ALL checkpoint history for the given thread/namespace.
+        """
+        await asyncio.to_thread(self.delete_thread, config)
