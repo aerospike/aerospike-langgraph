@@ -1,6 +1,6 @@
 # LangGraph Aerospike Checkpointer
 
-Store LangGraph checkpoints in Aerospike using the provided `AerospikeSaver`. The repo includes a minimal Aerospike docker setup, examples, and pytest-based checks.
+Store LangGraph checkpoints in Aerospike using the provided `AerospikeSaver`.
 
 ## Installation
 
@@ -10,11 +10,8 @@ pip install -U langgraph-checkpoint-aerospike
 
 ## Usage
 
-1. Bring up Aerospike locally:
-   ```bash
-   docker compose up -d
-   ```
-2. Point the saver at your cluster (defaults match compose):
+1. Bring up Aerospike locally using prebuilt [Aerospike Docker Image](https://hub.docker.com/_/aerospike):
+2. Point the saver at your cluster (Default):
    - `AEROSPIKE_HOST=127.0.0.1`
    - `AEROSPIKE_PORT=3000`
    - `AEROSPIKE_NAMESPACE=test`
