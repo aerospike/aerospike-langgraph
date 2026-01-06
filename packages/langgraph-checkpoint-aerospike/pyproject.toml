@@ -30,7 +30,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/aerospike/aerospike-langgraph"
-Documentation = "https://github.com/aerospike/aerospike-langgraph#readme"
+Documentation = "https://github.com/aerospike/aerospike-langgraph/blob/main/packages/langgraph-checkpoint-aerospike/README.md"
 Repository = "https://github.com/aerospike/aerospike-langgraph"
 Issues = "https://github.com/aerospike/aerospike-langgraph/issues"
 
