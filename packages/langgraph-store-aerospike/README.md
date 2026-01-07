@@ -36,4 +36,31 @@ docker run -d --name aerospike -p 3000-3002:3000-3002 container.aerospike.com/ae
        namespace="test",
        set="langgraph_store"
    )
+   store.put(
+       namespace=("users", "profiles"),
+       key="user_123",
+       value={"name": "Alice", "age": 30}
+   )
+
+   # Get data
+   item = store.get(namespace=("users", "profiles"), key="user_123")
+   print(item.value)  # {"name": "Alice", "age": 30}
+
+   # Batch operations
+   ops = [
+       PutOp(namespace=("documents",), key="doc1", value={"status": "draft"}),
+       PutOp(namespace=("documents",), key="doc2", value={"status": "published"}),
+       GetOp(namespace=("documents",), key="doc1"),
+   ]
+   results = store.batch(ops)
+
+   # Search with filters
+   search_results = store.search(
+       namespace_prefix=("documents",),
+       filter={"status": {"$eq": "draft"}},
+       limit=10
+   )
+
+   # Delete item
+   store.delete(namespace=("users", "profiles"), key="user_123")
 ```
