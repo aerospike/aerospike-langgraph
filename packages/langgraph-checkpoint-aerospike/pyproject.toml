@@ -24,8 +24,8 @@ classifiers = [
     "Topic :: Database",
 ]
 dependencies = [
-  "langgraph>=1.0.2",
-  "aerospike>=18.0.0",
+  "langgraph>=0.6.0",
+  "aerospike>=15.0.0",
 ]
 
 [project.urls]
