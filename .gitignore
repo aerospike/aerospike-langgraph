@@ -39,6 +39,7 @@ build/
 node_modules/
 vendor/
 venv/
+.venv/
 env/
 
 # Test coverage

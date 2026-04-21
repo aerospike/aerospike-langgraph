@@ -10,7 +10,7 @@ def test_write_and_get(store):
     ns = ("demo", "user1")
     key = "k1"
     value = {"foo": "bar"}
-    store.write(PutOp(namespace=ns, key=key, value=value))
+    store.batch([PutOp(namespace=ns, key=key, value=value)])
     item = store.get(ns, key)
     assert item is not None
     assert item.namespace == ns
@@ -19,7 +19,7 @@ def test_write_and_get(store):
 def test_list_namespaces(store):
     cleanup(store)
     ns = ("demo", "user2")
-    store.write(PutOp(namespace=ns, key="x", value={"a": 1}))
+    store.batch([PutOp(namespace=ns, key="x", value={"a": 1})])
     out = store.list_namespaces()
     assert ns in out
     prefixed = store.list_namespaces(prefix=("demo",))
