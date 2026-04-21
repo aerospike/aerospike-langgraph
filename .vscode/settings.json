@@ -1,4 +1,11 @@
 {
-	"yaml.schemas": {},
-	"cSpell.words": ["aerospike", "kennylong", "kennylong's"]
+	"cSpell.words": ["aerospike", "langgraph"],
+	"[python]": {
+		"editor.defaultFormatter": "charliermarsh.ruff",
+		"editor.formatOnSave": true,
+		"editor.codeActionsOnSave": {
+			"source.fixAll.ruff": "explicit",
+			"source.organizeImports.ruff": "explicit"
+		}
+	}
 }
