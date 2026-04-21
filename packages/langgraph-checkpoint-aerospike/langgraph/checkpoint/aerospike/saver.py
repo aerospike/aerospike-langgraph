@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone 
+from datetime import datetime, timezone
 import json
-import time
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from collections.abc import Iterator, Sequence, AsyncIterator
 import asyncio
 
@@ -84,16 +83,17 @@ class AerospikeSaver(BaseCheckpointSaver):
     
     # ---------- aerospike io ----------
     def _put(self, key, bins: Dict[str, Any]) -> None:
+        policy: Optional[Dict[str, Any]] = None
         minutes = self._ttl_minutes
-        meta = None
         if minutes is not None:
             minutes = int(minutes)
             if minutes > 0:
-                meta = {"ttl": minutes * 60}
-            else:
-                meta = None
+                policy = {"ttl": minutes * 60}
         try:
-            self.client.put(key, bins, meta)
+            if policy is not None:
+                self.client.put(key, bins, policy=policy)
+            else:
+                self.client.put(key, bins)
         except aerospike.exception.AerospikeError as e:
             raise RuntimeError(f"Aerospike put failed for {key}: {e}") from e
 

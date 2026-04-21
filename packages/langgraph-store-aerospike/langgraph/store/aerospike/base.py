@@ -28,7 +28,6 @@ from typing import (
     Any,
     Literal
 )
-import time
 
 SEP = "|"
 
@@ -58,7 +57,7 @@ class AerospikeStore(BaseStore):
     def _put(self, key, bins: Dict[str, Any], ttl: Optional[int]) -> None:
         try:
             if ttl is not None:
-                self.client.put(key, bins, {"ttl": ttl})
+                self.client.put(key, bins, policy={"ttl": ttl})
             else:
                 self.client.put(key, bins)
         except aerospike.exception.AerospikeError as e:
@@ -371,7 +370,6 @@ class AerospikeStore(BaseStore):
 
     def batch(self, ops: Iterable[Op]) -> list[Result]:
         result : list[Result] = []
-        # dedeup_puts: dict[tuple[tuple[str, ...]], PutOp] = {}
         for op in ops:
             if isinstance(op, GetOp):
                 result.append(
@@ -382,8 +380,6 @@ class AerospikeStore(BaseStore):
                 )
 
             elif isinstance(op, PutOp):
-                #dedeup_puts[(op.namespace, op.key)] = op
-                #self.write(op=op)
                 self.put(
                     namespace= op.namespace,
                     key= op.key,
