@@ -49,6 +49,10 @@ jobs:
           branch: chore/uv-lock-upgrade
           delete-branch: true
           add-paths: uv.lock
+          # Create the commit via the GitHub Contents API so it's signed
+          # with GitHub's web-flow GPG key and shows as "Verified". Needed
+          # when the target branch requires signed commits.
+          sign-commits: true
           commit-message: "chore: refresh uv.lock via weekly upgrade"
           title: "chore: weekly uv lockfile upgrade"
           body: |
