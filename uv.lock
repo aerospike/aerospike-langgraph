@@ -53,6 +53,8 @@ name = "aerospike-langgraph"
 version = "0"
 source = { virtual = "." }
 dependencies = [
+    { name = "aerospike" },
+    { name = "langchain-core" },
     { name = "langgraph-checkpoint-aerospike" },
     { name = "langgraph-store-aerospike" },
 ]
@@ -61,6 +63,7 @@ dependencies = [
 dev = [
     { name = "deptry" },
     { name = "langchain-community" },
+    { name = "langgraph-checkpoint-conformance" },
     { name = "mypy" },
     { name = "pre-commit" },
     { name = "pytest" },
@@ -69,6 +72,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aerospike", specifier = ">=19.2.1" },
+    { name = "langchain-core", specifier = ">=1.3.0" },
     { name = "langgraph-checkpoint-aerospike", editable = "packages/langgraph-checkpoint-aerospike" },
     { name = "langgraph-store-aerospike", editable = "packages/langgraph-store-aerospike" },
 ]
@@ -77,6 +82,7 @@ requires-dist = [
 dev = [
     { name = "deptry", specifier = ">=0.25" },
     { name = "langchain-community" },
+    { name = "langgraph-checkpoint-conformance", specifier = ">=0.0.2" },
     { name = "mypy", specifier = ">=1.20" },
     { name = "pre-commit", specifier = ">=4.6" },
     { name = "pytest", specifier = ">=8" },
@@ -467,7 +473,7 @@ name = "exceptiongroup"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/50/79/66800aadf48771f6b62f7eb014e352e5d06856655206165d775e675a02c9/exceptiongroup-1.3.1.tar.gz", hash = "sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219", size = 30371, upload-time = "2025-11-21T23:01:54.787Z" }
 wheels = [
@@ -879,6 +885,18 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
 ]
 provides-extras = ["dev"]
+
+[[package]]
+name = "langgraph-checkpoint-conformance"
+version = "0.0.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "langgraph-checkpoint" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/81/da/93e4e31f1f64eb12eb9b1a721161708ed7cdcacf9a105d6f6c203f903721/langgraph_checkpoint_conformance-0.0.2.tar.gz", hash = "sha256:6718e00937bf2f04cdfd2cdfabea23e1dabb79a534ff4c127f305f6b40dad4e0", size = 93726, upload-time = "2026-04-08T23:02:08.74Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ff/ed/27dc4ce19f9c848521e45cbf778b1a8d8d774fa468bab67f5a5fd51e9fe0/langgraph_checkpoint_conformance-0.0.2-py3-none-any.whl", hash = "sha256:c112ddc0416b097c90a145fd1908ba570db4cba209e1ae0330205e9f466ad4f9", size = 28425, upload-time = "2026-04-08T23:02:07.668Z" },
+]
 
 [[package]]
 name = "langgraph-prebuilt"
