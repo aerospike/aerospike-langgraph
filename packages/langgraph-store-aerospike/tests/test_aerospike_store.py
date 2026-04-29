@@ -1,46 +1,4 @@
-import aerospike
-import pytest
-from langgraph.store.aerospike.base import AerospikeStore
 from langgraph.store.base import GetOp, ListNamespacesOp, MatchCondition, PutOp, SearchOp
-
-# Configuration for local Docker instance
-AEROSPIKE_CONFIG = {"hosts": [("localhost", 3000)]}
-TEST_NAMESPACE = "test"  # Aerospike default namespace is often 'test'
-TEST_SET = "langgraph_store"
-
-
-@pytest.fixture(scope="session")
-def aerospike_client():
-    """
-    Creates a single connection for the whole test session.
-    """
-    client = aerospike.client(AEROSPIKE_CONFIG).connect()
-    yield client
-    client.close()
-
-
-@pytest.fixture
-def store(aerospike_client):
-    """
-    Creates the store instance and cleans up the set before each test.
-    """
-    store = AerospikeStore(client=aerospike_client, namespace=TEST_NAMESPACE, set=TEST_SET)
-
-    # --- Cleanup / Truncate Set before test starts ---
-    # Note: truncate is asynchronous, so we wait briefly or just use scan/remove
-    # for strictly clean state if truncate is slow. For unit tests, scan+remove is safer.
-    try:
-        scan = aerospike_client.scan(TEST_NAMESPACE, TEST_SET)
-
-        def callback(input_tuple):
-            key, _, _ = input_tuple
-            aerospike_client.remove(key)
-
-        scan.foreach(callback)
-    except Exception:
-        pass  # Ignore if set is empty
-
-    return store
 
 
 def test_basic_put_and_get(store):

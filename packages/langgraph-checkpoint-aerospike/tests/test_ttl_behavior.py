@@ -1,23 +1,25 @@
-# tests/test_ttl_behavior.py
 from __future__ import annotations
 
 import time
 
 import pytest
 
+_DEFAULT_CHECKPOINT_SETS = ("lg_cp", "lg_cp_w", "lg_cp_meta")
+
 
 @pytest.fixture
-def short_ttl_saver(aerospike_saver_cls, client, aerospike_namespace):
-    """Saver with a small TTL (1 minute) and sliding TTL enabled."""
-    ttl_cfg = {
-        "default_ttl": 1,  # minutes
-        "refresh_on_read": True,
-    }
-    return aerospike_saver_cls(
+def short_ttl_saver(aerospike_saver_cls, client, aerospike_namespace, truncate_sets):
+    """Yield a saver with a 1-minute TTL and sliding refresh, truncated each test."""
+    truncate_sets(_DEFAULT_CHECKPOINT_SETS)
+    saver = aerospike_saver_cls(
         client=client,
         namespace=aerospike_namespace,
-        ttl=ttl_cfg,
+        ttl={"default_ttl": 1, "refresh_on_read": True},
     )
+    try:
+        yield saver
+    finally:
+        truncate_sets(_DEFAULT_CHECKPOINT_SETS)
 
 
 def test_checkpoint_has_ttl(short_ttl_saver, client, aerospike_namespace):

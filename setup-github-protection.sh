@@ -37,7 +37,7 @@ fi
 
 # --- Payloads ---
 
-CHECKS='[{"context":"Trunk Check"},{"context":"validate-jira-ticket / hygiene-check"}]'
+CHECKS='[{"context":"validate-jira-ticket / hygiene-check"}]'
 
 # RepositoryRole actor_id 5 = built-in "Admin" role (1=Read..5=Admin)
 RULESET_PAYLOAD="$(jq -n --arg name "$RULESET_NAME" --argjson checks "$CHECKS" '{

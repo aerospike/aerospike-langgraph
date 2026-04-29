@@ -16,6 +16,7 @@ from langgraph.checkpoint.base import (
     Checkpoint,
     CheckpointMetadata,
     CheckpointTuple,
+    SerializerProtocol,
 )
 
 import aerospike
@@ -37,7 +38,16 @@ class AerospikeSaver(BaseCheckpointSaver):
         set_writes: str = "lg_cp_w",
         set_meta: str = "lg_cp_meta",
         ttl: dict[str, Any] | None = None,
+        *,
+        serde: SerializerProtocol | None = None,
     ) -> None:
+        # `BaseCheckpointSaver.__init__` registers `self.serde`, wrapping it
+        # in `maybe_add_typed_methods` for backwards compatibility. Skipping
+        # this call leaves `self.serde` pointing at the class-level default
+        # and bypasses any future bookkeeping upstream adds to the base
+        # constructor, so always forward.
+        super().__init__(serde=serde)
+
         self.client = client
         self.ns = namespace
         self.set_cp = set_cp
@@ -47,6 +57,28 @@ class AerospikeSaver(BaseCheckpointSaver):
         self.timeline_max: int | None = None
         self._ttl_minutes: int | None = self.ttl.get("default_ttl")
         self._refresh_on_read: bool = bool(self.ttl.get("refresh_on_read", False))
+
+        self._ensure_indexes()
+
+    def _ensure_indexes(self) -> None:
+        """Create the secondary indexes ``delete_thread`` relies on.
+
+        Idempotent: if an index with the same name already exists,
+        ``IndexFoundError`` is raised by the client and silently swallowed.
+        Any other failure (auth, namespace missing, ...) is propagated so
+        misconfiguration surfaces at construction time rather than later
+        when ``delete_thread`` is called.
+        """
+        for set_name in (self.set_cp, self.set_writes, self.set_meta):
+            index_name = f"{set_name}_thread_id_idx"
+            with contextlib.suppress(aerospike.exception.IndexFoundError):
+                self.client.index_single_value_create(
+                    self.ns,
+                    set_name,
+                    "thread_id",
+                    aerospike.INDEX_STRING,
+                    index_name,
+                )
 
     # ---------- config parsing ----------
     @staticmethod
@@ -168,8 +200,6 @@ class AerospikeSaver(BaseCheckpointSaver):
         key = self._key_cp(thread_id, checkpoint_ns, checkpoint_id)
         rec: dict[str, Any] = {
             "thread_id": thread_id,
-            "checkpoint_ns": checkpoint_ns,
-            "checkpoint_id": checkpoint_id,
             "p_checkpoint_id": parent_checkpoint_id,
             "cp_type": cp_type,
             "checkpoint": cp_bytes,
@@ -180,7 +210,14 @@ class AerospikeSaver(BaseCheckpointSaver):
         self._put(key, rec)
 
         latest_key = self._key_latest(thread_id, checkpoint_ns)
-        self._put(latest_key, {"checkpoint_id": checkpoint_id, "ts": ts})
+        self._put(
+            latest_key,
+            {
+                "thread_id": thread_id,
+                "checkpoint_id": checkpoint_id,
+                "ts": ts,
+            },
+        )
 
         timeline_key = self._key_timeline(thread_id, checkpoint_ns)
         items = self._read_timeline_items(timeline_key)
@@ -189,7 +226,13 @@ class AerospikeSaver(BaseCheckpointSaver):
         items.insert(0, (ts, checkpoint_id))
         if self.timeline_max is not None and len(items) > self.timeline_max:
             items = items[: self.timeline_max]
-        self._put(timeline_key, {"items": json.dumps(items)})
+        self._put(
+            timeline_key,
+            {
+                "thread_id": thread_id,
+                "items": json.dumps(items),
+            },
+        )
 
         cfg_conf: dict[str, Any] = {**(config.get("configurable") or {})}
         cfg_conf.update(
@@ -253,7 +296,13 @@ class AerospikeSaver(BaseCheckpointSaver):
             else:
                 existing_items.append(new_item)
 
-        self._put(key, {"writes": existing_items})
+        self._put(
+            key,
+            {
+                "thread_id": thread_id,
+                "writes": existing_items,
+            },
+        )
 
     def get_tuple(
         self,
@@ -336,26 +385,29 @@ class AerospikeSaver(BaseCheckpointSaver):
         )
 
     def delete_thread(self, thread_id: str) -> None:
-        """Delete all checkpoint history for ``thread_id`` across the default namespace."""
-        checkpoint_ns = ""
+        """Delete every checkpoint, pending-write, and meta record for ``thread_id``.
 
-        timeline_key = self._key_timeline(thread_id, checkpoint_ns)
-        items = self._read_timeline_items(timeline_key)
-        checkpoint_ids = [cid for _ts, cid in items if cid]
+        Spans every ``checkpoint_ns`` belonging to the thread. Implemented
+        with a per-set secondary-index query on the ``thread_id`` bin
+        (created in ``_ensure_indexes``), so cost is O(records-for-thread)
+        rather than O(set-size).
+        """
+        from aerospike import predicates  # local import to avoid global aerospike side-effects
 
-        latest_key = self._key_latest(thread_id, checkpoint_ns)
-        latest_rec = self._get(latest_key)
-        if latest_rec is not None:
-            latest_cid = (latest_rec[2] or {}).get("checkpoint_id")
-            if isinstance(latest_cid, str) and latest_cid and latest_cid not in checkpoint_ids:
-                checkpoint_ids.append(latest_cid)
+        for set_name in (self.set_cp, self.set_writes, self.set_meta):
+            digests: builtins.list[bytes] = []
 
-        for cid in checkpoint_ids:
-            self._delete(self._key_cp(thread_id, checkpoint_ns, cid))
-            self._delete(self._key_writes(thread_id, checkpoint_ns, cid))
+            def _collect(record: tuple, _digests: builtins.list[bytes] = digests) -> None:
+                (_, _, _, digest), _meta, _bins = record
+                _digests.append(digest)
 
-        self._delete(timeline_key)
-        self._delete(latest_key)
+            query = self.client.query(self.ns, set_name)
+            query.where(predicates.equals("thread_id", thread_id))
+            query.foreach(_collect)
+
+            for digest in digests:
+                with contextlib.suppress(aerospike.exception.RecordNotFound):
+                    self.client.remove((self.ns, set_name, None, digest))
 
     def list(
         self,

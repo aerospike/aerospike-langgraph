@@ -1,3 +1,3 @@
-from .base import AerospikeStore
+from .store import AerospikeStore
 
 __all__ = ["AerospikeStore"]

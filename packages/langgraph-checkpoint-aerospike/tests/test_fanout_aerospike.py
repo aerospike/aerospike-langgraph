@@ -1,5 +1,3 @@
-# tests/test_fanout_aerospike.py
-
 import operator
 import os
 from typing import Annotated, TypedDict
@@ -10,6 +8,10 @@ from langgraph.checkpoint.aerospike import AerospikeSaver
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
+
+# Dedicated sets so this fan-out workload doesn't intermix with other tests'
+# data — useful when poking around in `aql` between failures.
+_FANOUT_SETS = ("lg_cp_fanout", "lg_cp_fanout_w", "lg_cp_fanout_meta")
 
 # ---------- Graph definitions (copied from Mongo benchmark, sync only) ----------
 
@@ -79,34 +81,21 @@ def joke_subjects() -> OverallState:
     return {"subjects": years}
 
 
-@pytest.fixture(scope="function")
-def aerospike_client():
-    """
-    Minimal local Aerospike client.
-    Adapt host/port/namespace to your setup.
-    """
-    import aerospike
-
-    config = {
-        "hosts": [("127.0.0.1", 3000)],
-    }
-    client = aerospike.client(config).connect()
-    try:
-        yield client
-    finally:
-        client.close()
-
-
-@pytest.fixture(scope="function")
-def aerospike_saver(aerospike_client) -> AerospikeSaver:
-    # Use dedicated sets so these tests don't collide with others
-    return AerospikeSaver(
-        client=aerospike_client,
-        namespace="test",
-        set_cp="lg_cp_fanout",
-        set_writes="lg_cp_fanout_w",
-        set_meta="lg_cp_fanout_meta",
+@pytest.fixture()
+def aerospike_saver(client, aerospike_namespace, truncate_sets):
+    """Yield an `AerospikeSaver` on dedicated sets, truncated each test."""
+    truncate_sets(_FANOUT_SETS)
+    saver = AerospikeSaver(
+        client=client,
+        namespace=aerospike_namespace,
+        set_cp=_FANOUT_SETS[0],
+        set_writes=_FANOUT_SETS[1],
+        set_meta=_FANOUT_SETS[2],
     )
+    try:
+        yield saver
+    finally:
+        truncate_sets(_FANOUT_SETS)
 
 
 @pytest.fixture(autouse=True)
