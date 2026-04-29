@@ -3,7 +3,7 @@ name: Upgrade uv lockfile
 # Refreshes uv.lock every Sunday so transitive dependencies (and any
 # security patches that came with them) get pulled in regularly instead
 # of only when someone happens to touch deps. The result is opened as a
-# PR against `dev`, where CI verifies the upgraded versions still pass
+# PR against `main`, where CI verifies the upgraded versions still pass
 # lint, type-check and tests.
 #
 # Authenticates with a fine-grained PAT (`LOCKFILE_PR_TOKEN`) instead of
@@ -27,10 +27,10 @@ jobs:
     name: Refresh uv.lock
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout dev
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
-          ref: dev
+          ref: main
           token: ${{ secrets.LOCKFILE_PR_TOKEN }}
 
       - name: Install uv
@@ -45,12 +45,17 @@ jobs:
         uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.LOCKFILE_PR_TOKEN }}
-          base: dev
+          base: main
           branch: chore/uv-lock-upgrade
           delete-branch: true
           add-paths: uv.lock
           commit-message: "chore: refresh uv.lock via weekly upgrade"
           title: "chore: weekly uv lockfile upgrade"
+          # `main` requires signed commits (see setup-github-protection.sh).
+          # `sign-commits: true` makes the action create the commit via the
+          # GitHub Contents API, which signs it with GitHub's web-flow GPG
+          # key so it shows as "Verified" and satisfies the rule.
+          sign-commits: true
           body: |
             Automated weekly run of `uv lock --upgrade`.
 
